@@ -1,30 +1,24 @@
-# Warband Universal Map & Scene Editor
+# Warband Map & Party Editor
 
-专为《骑马与砍杀：战团》（Mount & Blade: Warband）MOD 制作打造的轻量级、商用级可视化大地图与据点编辑器。
+A lightweight visual editor for *Mount & Blade: Warband* overworld maps (`map.txt`) and parties (`parties.txt`).
 
-支持 Native 原版以及包括 **1815**、**1257 AD**、**457 乱世**、**汉匈决战** 等在内的全系列战团 MOD。
+Compatible with Native and various community modules (e.g., 1257 AD, 1815, Custom/Naval mods).
 
----
+## Features
 
-## 核心特性
+- **Mesh Rendering**: Direct parsing and rendering of `map.txt` vertices and faces.
+- **Terrain Types**: Supports all 16 engine terrain types, including deep ocean.
+- **Editing Tools**:
+  - **Party Positioning**: Select and reposition settlements and spawns directly on the map.
+  - **Brush**: Multi-radius terrain painting with spatial indexing.
+  - **Fill**: Topology-based flood fill for connected terrain regions.
+  - **Picker**: Sample terrain material directly from mesh faces.
+  - **Pan & Zoom**: Smooth canvas navigation and viewport reset.
+- **Undo / Redo**: Operation history stack (`Ctrl+Z` / `Ctrl+Y`).
+- **File Safety**: In-place updates for `map.txt` and `parties.txt` preserving original structure and encodings.
+- **Export**: Render and export the current map view to PNG or JPG.
 
-- **原生 3D 网格渲染**：直接解析 `map.txt` 的 20,000+ 顶点与 40,000+ 面片（Face），1:1 还原游戏内大地图。
-- **16 种全生态地形**：完整支持战团全 16 种地貌（包含 1257AD、457 等航海 MOD 专属的第 16 种紫色远洋深水区）。
-- **紧凑 8×2 调色盘**：顶部悬浮面板集成快速地貌切换气泡窗。
-- **高级绘图工具箱**：
-  - `✋` 漫游：左键拖动平移画布（任何模式下亦可直接**右键全局拖动**）。
-  - `↖` 据点编辑：精准无钝感拖动据点（城镇、城堡、村庄等）。
-  - `✏️` 地形铅笔：可调粗细（0~15 级半径），基于空间哈希网格算法，大笔刷涂抹依然丝滑 60fps。
-  - `🪣` 区域填充（油漆桶）：基于面片边缘拓扑图（Adjacency Graph）瞬间泛洪填充连续地貌。
-  - `💉` 吸管：快速拾取地图上面片的地形材质。
-- **历史栈回滚**：完整支持 `Ctrl+Z` 撤销与 `Ctrl+Y` 重做。
-- **缩放与视图复位**：支持滚轮缩放、百分比无级放大缩小及一键视角复位。
-- **全景导出**：支持一键将绘制好的大地图导出为高清 PNG / JPG 图像（`Ctrl+Shift+E`）。
-- **安全无损写回**：精准替换 `map.txt` 与 `parties.txt` 对应字段，绝不破坏文件格式与编码。
-
----
-
-## 运行要求
+## Requirements
 
 - Python 3.8+
 - PyQt5
@@ -34,15 +28,14 @@ pip install PyQt5
 python3 map_editor.py
 ```
 
----
+## Controls & Shortcuts
 
-## 快捷键
-
-| 快捷键 | 功能 |
+| Action | Shortcut |
 |---|---|
-| `鼠标右键拖动` | 全局漫游画布 (Pan) |
-| `鼠标滚轮` | 平滑等比缩放 |
-| `Ctrl + S` | 保存 `map.txt` 与 `parties.txt` |
-| `Ctrl + Z` | 撤销绘制 |
-| `Ctrl + Y` | 重做绘制 |
-| `Ctrl + Shift + E` | 导出高清大地图图片 |
+| Pan | Right-click drag |
+| Zoom | Scroll wheel |
+| Save (`map.txt` & `parties.txt`) | `Ctrl + S` |
+| Undo | `Ctrl + Z` |
+| Redo | `Ctrl + Y` |
+| Export Image | `Ctrl + Shift + E` |
+| Reset View | `Ctrl + 0` / Reset button |
