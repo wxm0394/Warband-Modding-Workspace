@@ -6,3 +6,6 @@ __pycache__/
 *.png
 *.jpg
 *.txt
+build/
+dist/
+*.spec.bak

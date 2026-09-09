@@ -18,10 +18,13 @@ Compatible with Native and various community modules (e.g., 1257 AD, 1815, Custo
 - **File Safety**: In-place updates for `map.txt` and `parties.txt` preserving original structure and encodings.
 - **Export**: Render and export the current map view to PNG or JPG.
 
-## Requirements
+## Installation & Usage
 
-- Python 3.8+
-- PyQt5
+### Standalone Executable (No Python Required)
+Download the prebuilt single-file binary for Windows or Linux directly from the [Releases](https://github.com/wxm0394/map-editor/releases) page and run it.
+
+### Running from Source
+Requires Python 3.8+ and PyQt5:
 
 ```bash
 pip install PyQt5
