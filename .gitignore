@@ -9,3 +9,6 @@ __pycache__/
 build/
 dist/
 *.spec.bak
+lexile_ruby_mvp/
+__pycache__/
+.pytest_cache/

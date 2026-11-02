@@ -1,9 +1,23 @@
+#!/usr/bin/env python3
 import sys
 import os
 import math
+import re
+
+# ==================== Linux DRM / NVIDIA 驱动崩溃防御 ====================
+# 强制 PyQt5 使用纯 CPU 软件光栅引擎，禁用 DRI3/GLX 硬件探测与设备打开
+os.environ["QT_XCB_FORCE_SOFTWARE_OPENGL"] = "1"
+os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+os.environ["QT_QUICK_BACKEND"] = "software"
+# =======================================================================
+
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
+
+# 强制开启软件 OpenGL
+QCoreApplication.setAttribute(Qt.AA_UseSoftwareOpenGL)
+
 
 # 16 种原生 Warband 大地图地形材质（兼容 Native / 1815 / 1257AD / 457 等全部 MOD）
 TERRAIN_COLORS = {
@@ -33,6 +47,211 @@ TERRAIN_NAMES = {
 }
 
 
+# 8 种据点类型元数据（7 种拿战战役地图经典矢量标 + 1 种引擎系统隐匿项）
+CATEGORY_META = {
+    'town': {
+        'name': '城镇 (Town)',
+        'color': '#2563eb',
+        'badge': '🏰'
+    },
+    'castle': {
+        'name': '堡垒 (Castle)',
+        'color': '#dc2626',
+        'badge': '🛡️'
+    },
+    'village': {
+        'name': '村庄 (Village)',
+        'color': '#d97706',
+        'badge': '🌾'
+    },
+    'bridge': {
+        'name': '桥梁 (Bridge)',
+        'color': '#475569',
+        'badge': '🌉'
+    },
+    'training_camp': {
+        'name': '训练营 (Camp)',
+        'color': '#16a34a',
+        'badge': '⛺'
+    },
+    'special_scene': {
+        'name': '特殊/遗留场景 (Relic)',
+        'color': '#8b5cf6',
+        'badge': '🏛️'
+    },
+    'spawn_point': {
+        'name': '野怪刷新点 (Spawn)',
+        'color': '#ea580c',
+        'badge': '⚔️'
+    },
+    'hidden_system': {
+        'name': '系统引擎项 (Hidden)',
+        'color': '#6c7086',
+        'badge': '⚙️'
+    },
+}
+
+_CATEGORY_ICON_CACHE = {}
+
+def create_category_icon(cat):
+    if cat in _CATEGORY_ICON_CACHE:
+        return _CATEGORY_ICON_CACHE[cat]
+    pm = QPixmap(18, 18)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.translate(9, 9)
+
+    if cat == 'town':
+        path = QPainterPath()
+        for i in range(16):
+            r = 7.5 if i % 2 == 0 else 4.5
+            a = i * math.pi / 8
+            pt = QPointF(r * math.cos(a), r * math.sin(a))
+            if i == 0: path.moveTo(pt)
+            else: path.lineTo(pt)
+        path.closeSubpath()
+        p.setPen(QPen(QColor('#0f172a'), 1.0))
+        p.setBrush(QBrush(QColor('#2563eb')))
+        p.drawPath(path)
+        p.setBrush(QBrush(QColor('#ffffff')))
+        p.drawEllipse(QRectF(-2.5, -2.5, 5, 5))
+    elif cat == 'castle':
+        pts = [
+            QPointF(0, -8), QPointF(2, -3), QPointF(3, -3), QPointF(3, -2),
+            QPointF(8, 0), QPointF(3, 2), QPointF(3, 3), QPointF(2, 3),
+            QPointF(0, 8), QPointF(-2, 3), QPointF(-3, 3), QPointF(-3, 2),
+            QPointF(-8, 0), QPointF(-3, -2), QPointF(-3, -3), QPointF(-2, -3)
+        ]
+        path = QPainterPath()
+        path.moveTo(pts[0])
+        for pt in pts[1:]: path.lineTo(pt)
+        path.closeSubpath()
+        p.setPen(QPen(QColor('#450a0a'), 1.0))
+        p.setBrush(QBrush(QColor('#dc2626')))
+        p.drawPath(path)
+        p.setBrush(QBrush(QColor('#ffffff')))
+        p.drawRect(QRectF(-2, -2, 4, 4))
+    elif cat == 'village':
+        p.setPen(QPen(QColor('#451a03'), 1.0))
+        p.setBrush(QBrush(QColor('#d97706')))
+        p.drawRect(QRectF(-4.5, -1, 9, 6))
+        roof = QPainterPath()
+        roof.moveTo(-6, -1); roof.lineTo(0, -7); roof.lineTo(6, -1); roof.closeSubpath()
+        p.setBrush(QBrush(QColor('#b45309')))
+        p.drawPath(roof)
+    elif cat == 'bridge':
+        p.rotate(45)
+        p.setPen(QPen(QColor('#0f172a'), 1.0))
+        p.setBrush(QBrush(QColor('#475569')))
+        p.drawRoundedRect(QRectF(-7, -2.5, 14, 5), 1, 1)
+        p.setPen(QPen(QColor('#1e293b'), 1.5))
+        p.drawLine(-7, -4, -7, 4)
+        p.drawLine(7, -4, 7, 4)
+    elif cat == 'training_camp':
+        tent = QPainterPath()
+        tent.moveTo(0, -6); tent.lineTo(6, 5); tent.lineTo(-6, 5); tent.closeSubpath()
+        p.setPen(QPen(QColor('#052e16'), 1.0))
+        p.setBrush(QBrush(QColor('#16a34a')))
+        p.drawPath(tent)
+        p.setPen(QPen(QColor('#ffffff'), 1.0))
+        p.drawLine(0, -6, 0, -9)
+        p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor('#dc2626')))
+        flag = QPainterPath()
+        flag.moveTo(0, -9); flag.lineTo(4, -7.5); flag.lineTo(0, -6); flag.closeSubpath()
+        p.drawPath(flag)
+    elif cat == 'special_scene':
+        p.setPen(QPen(QColor('#3b0764'), 1.0))
+        p.setBrush(QBrush(QColor('#7e22ce')))
+        p.drawRect(QRectF(-5.5, 3, 11, 2.5))
+        ped = QPainterPath()
+        ped.moveTo(0, -6); ped.lineTo(6, -2); ped.lineTo(-6, -2); ped.closeSubpath()
+        p.drawPath(ped)
+        p.setBrush(QBrush(QColor('#c084fc')))
+        p.drawRect(QRectF(-4.5, -2, 2, 5))
+        p.drawRect(QRectF(-1, -2, 2, 5))
+        p.drawRect(QRectF(2.5, -2, 2, 5))
+    elif cat == 'spawn_point':
+        p.setPen(QPen(QColor('#7c2d12'), 1.0))
+        p.setBrush(QBrush(QColor('#ea580c')))
+        d = QPainterPath()
+        d.moveTo(0, -6); d.lineTo(6, 0); d.lineTo(0, 6); d.lineTo(-6, 0); d.closeSubpath()
+        p.drawPath(d)
+        p.setPen(QPen(QColor('#ffffff'), 1.2))
+        p.drawLine(-4, -4, 4, 4); p.drawLine(4, -4, -4, 4)
+    elif cat == 'hidden_system':
+        p.setPen(QPen(QColor('#64748b'), 1.0, Qt.DashLine))
+        p.setBrush(QBrush(QColor(100, 116, 139, 45)))
+        p.drawEllipse(QRectF(-4, -4, 8, 8))
+    p.end()
+    icon = QIcon(pm)
+    _CATEGORY_ICON_CACHE[cat] = icon
+    return icon
+
+
+def categorize_party(pid, raw_name):
+    """
+    智能识别 Warband 据点实体类型:
+    1. bridge: 桥梁 (解析旋转角度朝向)
+    2. spawn_point: 强盗与野怪刷新点
+    3. town: 城镇 / 主要设防城市
+    4. castle: 城堡 / 要塞 / 关卡
+    5. village: 村庄 / 乡镇
+    6. training_camp: 训练营 / 雇佣军营地
+    7. special_scene: 原版遗留 / 彩蛋 / 特殊独立场景 (禅达/盐矿/四道口客栈等)
+    8. hidden_system: 引擎底层占位/预留/伤亡标记/临时队伍 (带 {!} 默认隐匿)
+    """
+    pid_lower = pid.lower()
+    name_lower = raw_name.lower()
+
+    # 1. 桥梁 (优先判定：即使 txt 原名是 {!}1 也属于地图桥梁)
+    if pid_lower.startswith('p_bridge') or '_bridge_' in pid_lower:
+        return 'bridge'
+
+    # 2. 野外强盗/野怪刷新点 (排除结束标记 p_spawn_points_end)
+    if pid_lower == 'p_spawn_points_end':
+        return 'hidden_system'
+    if pid_lower.endswith('_spawn_point') or '_spawn_point_' in pid_lower or '_sp_' in pid_lower or pid_lower.startswith('p_spawn_point') or pid_lower.endswith('_sp'):
+        return 'spawn_point'
+
+    # 3. 城镇 (Town / City)
+    if pid_lower.startswith('p_town') or '_city_' in pid_lower or pid_lower.startswith('p_hx_city'):
+        return 'town'
+
+    # 4. 城堡 / 要塞 (Castle / Fort / Pass)
+    if pid_lower.startswith('p_castle') or pid_lower.startswith('p_fort') or '_castle_' in pid_lower or '_fort_' in pid_lower or pid_lower.startswith('p_hx_castle'):
+        return 'castle'
+
+    # 5. 村庄 (Village)
+    if pid_lower.startswith('p_village') or '_village_' in pid_lower or pid_lower.startswith('p_hx_village'):
+        return 'village'
+
+    # 6. 训练营 (Training Camp)
+    if pid_lower.startswith('p_training_ground') or 'training' in pid_lower or 'mercenary_camp' in name_lower:
+        return 'training_camp'
+
+    # 7. 原版遗留 / 彩蛋 / 特殊独立场景 / 玩家队伍起点
+    special_ids = {
+        'p_zendar', 'p_salt_mine', 'p_four_ways_inn', 'p_dhorak_keep',
+        'p_test_scene', 'p_battlefields', 'p_ruins', 'p_main_party'
+    }
+    if pid_lower in special_ids or any(k in pid_lower for k in ('ancient', 'monument', 'relic', 'tourism', 'exploration', 'ferry')):
+        return 'special_scene'
+
+    # 8. 引擎系统内部项 / 预留位 / 临时队伍 (带 {!} 隐匿)
+    if '{!}' in raw_name or pid_lower.startswith((
+        'p_temp', 'p_camp_bandits', 'p_routed', 'p_collective',
+        'p_main_party_backup', 'p_encountered', 'p_player_casualties',
+        'p_enemy_casualties', 'p_ally_casualties', 'p_total_enemy'
+    )):
+        return 'hidden_system'
+
+    # 默认兜底
+    if '{!}' in raw_name:
+        return 'hidden_system'
+    return 'special_scene'
+
+
 class PartyItem(QGraphicsItem):
     def __init__(self, party, editor):
         super().__init__()
@@ -40,41 +259,280 @@ class PartyItem(QGraphicsItem):
         self.editor = editor
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
-        
-        self.radius = 5
-        self.hit_radius = 18  # 保证跟手、不钝感
-        
-        pid = party['id']
-        self.color = Qt.red
-        self.scale_mult = 1.0
-        if pid.startswith('p_town'):
-            self.color = Qt.blue
-            self.scale_mult = 1.6
-        elif pid.startswith('p_castle'):
-            self.color = Qt.darkMagenta
-            self.scale_mult = 1.3
-        elif pid.startswith('p_village'):
-            self.color = Qt.darkGreen
-            self.scale_mult = 1.1
-            
-        self.setToolTip(f"{party['name']} (ID: {party['id']})\nFaction: {party['faction']}")
-        
-        self.label = QGraphicsTextItem(party['name'], self)
-        self.label.setPos(self.hit_radius, -10)
-        self.label.setFont(QFont("Arial", 10, QFont.Bold))
-        self.label.setDefaultTextColor(Qt.black)
+        self._is_rotating = False
+
+        self.hit_radius = 20  # 判定半径，保证跟手不钝感
+        cat = party.get('category', 'special_scene')
+        cat_info = CATEGORY_META.get(cat, CATEGORY_META['special_scene'])
+
+        tip = f"【{cat_info['name']}】{party['display_name']}\nID: {party['id']}\n势力: {party.get('faction', 'none')}\n坐标: ({party['x']:.2f}, {party['y']:.2f})"
+        if 'z' in party:
+            tip += f"\n高度(Z): {party['z']:.2f}"
+        if cat == 'bridge':
+            deg = math.degrees(party.get('angle', 0.0))
+            tip += f"\n朝向角度: {deg:.1f}° ({party.get('angle', 0.0):.4f} rad)\n[提示: 选中后按 Alt+滚轮 或左侧面板微调]"
+        self.setToolTip(tip)
+
+        self.label = QGraphicsTextItem(party['display_name'], self)
+        self.label.setPos(self.hit_radius + 3, -11)
+        self.label.setFont(QFont("Arial", 9, QFont.Bold))
+        self.label.setDefaultTextColor(QColor('#0f172a'))
 
     def boundingRect(self):
-        return QRectF(-self.hit_radius, -self.hit_radius, self.hit_radius*2, self.hit_radius*2)
+        return QRectF(-self.hit_radius, -self.hit_radius, self.hit_radius * 2, self.hit_radius * 2)
 
     def paint(self, painter, option, widget):
+        cat = self.party.get('category', 'special_scene')
+
+        # 选中高亮光圈 (拿战战役金黄微光环)
         if self.isSelected():
-            painter.setPen(QPen(Qt.yellow, 2))
-        else:
-            painter.setPen(QPen(Qt.black, 1))
-        painter.setBrush(self.color)
-        r = self.radius * self.scale_mult
-        painter.drawEllipse(QRectF(-r, -r, r*2, r*2))
+            painter.setPen(QPen(QColor('#f59e0b'), 2.2, Qt.DashLine))
+            painter.setBrush(QBrush(QColor(245, 158, 11, 45)))
+            painter.drawEllipse(QRectF(-self.hit_radius + 2, -self.hit_radius + 2, (self.hit_radius - 2)*2, (self.hit_radius - 2)*2))
+
+        # 1. 城镇: 中世纪带城墙城楼 (Medieval Walled City)
+        if cat == 'town':
+            # 外层城墙
+            painter.setPen(QPen(QColor('#1e293b'), 1.8))
+            painter.setBrush(QBrush(QColor('#64748b')))
+            painter.drawRoundedRect(QRectF(-12, -10, 24, 20), 3, 3)
+            
+            # 城垛细节
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor('#1e293b')))
+            for i in range(-10, 11, 4):
+                painter.drawRect(QRectF(i, -11, 2, 2))
+                painter.drawRect(QRectF(i, 9, 2, 2))
+            
+            # 内部主楼
+            painter.setPen(QPen(QColor('#0f172a'), 1.0))
+            painter.setBrush(QBrush(QColor('#2563eb')))
+            painter.drawRect(QRectF(-6, -6, 12, 12))
+            
+            # 中心塔顶
+            painter.setBrush(QBrush(QColor('#1e40af')))
+            painter.drawRect(QRectF(-3, -3, 6, 6))
+
+            # Z高度标签
+            if 'z' in self.party:
+                painter.setPen(QPen(QColor('#000000')))
+                painter.setFont(QFont("Arial", 7))
+                painter.drawText(QRectF(-15, 12, 30, 10), Qt.AlignCenter, f"Z:{self.party['z']:.0f}")
+
+        # 2. 堡垒/要塞: 中世纪方形主楼据点 (Medieval Keep)
+        elif cat == 'castle':
+            # 基座
+            painter.setPen(QPen(QColor('#292524'), 1.8))
+            painter.setBrush(QBrush(QColor('#78716c')))
+            painter.drawRect(QRectF(-10, -10, 20, 20))
+            
+            # 四个角塔
+            painter.setBrush(QBrush(QColor('#44403c')))
+            painter.drawRect(QRectF(-12, -12, 6, 6))
+            painter.drawRect(QRectF(6, -12, 6, 6))
+            painter.drawRect(QRectF(-12, 6, 6, 6))
+            painter.drawRect(QRectF(6, 6, 6, 6))
+            
+            # 中心内城
+            painter.setPen(QPen(QColor('#450a0a'), 1.0))
+            painter.setBrush(QBrush(QColor('#dc2626')))
+            painter.drawRect(QRectF(-5, -5, 10, 10))
+
+            # Z高度标签
+            if 'z' in self.party:
+                painter.setPen(QPen(QColor('#000000')))
+                painter.setFont(QFont("Arial", 7))
+                painter.drawText(QRectF(-15, 12, 30, 10), Qt.AlignCenter, f"Z:{self.party['z']:.0f}")
+
+        # 3. 村庄: 中世纪茅草顶农舍 (Medieval Thatched Cottage)
+        elif cat == 'village':
+            # 墙身
+            painter.setPen(QPen(QColor('#451a03'), 1.5))
+            painter.setBrush(QBrush(QColor('#fcd34d')))
+            painter.drawRect(QRectF(-8, -2, 16, 9))
+            
+            # 木框架 (半木结构)
+            painter.setPen(QPen(QColor('#451a03'), 1.0))
+            painter.drawLine(-8, 2, 8, 2)
+            painter.drawLine(0, -2, 0, 7)
+            painter.drawLine(-4, 2, -4, 7)
+            painter.drawLine(4, 2, 4, 7)
+
+            # 茅草屋顶
+            roof = QPainterPath()
+            roof.moveTo(-10, -2)
+            roof.lineTo(0, -11)
+            roof.lineTo(10, -2)
+            roof.closeSubpath()
+            painter.setPen(QPen(QColor('#78350f'), 1.5))
+            painter.setBrush(QBrush(QColor('#b45309')))
+            painter.drawPath(roof)
+            
+            # 门
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor('#451a03')))
+            painter.drawRect(QRectF(-2.5, 3, 5, 4))
+
+        # 4. 桥梁: 石拱渡桥 (按游戏内角度旋转并显示前进朝向)
+        elif cat == 'bridge':
+            angle = self.party.get('angle', 0.0)
+            angle_deg = -math.degrees(angle)
+            painter.save()
+            painter.rotate(angle_deg)
+
+            # 桥面铺装
+            painter.setPen(QPen(QColor('#0f172a'), 1.5))
+            painter.setBrush(QBrush(QColor('#475569')))
+            painter.drawRoundedRect(QRectF(-14, -5, 28, 10), 2, 2)
+
+            # 两侧引桥与石质挡墙
+            painter.setPen(QPen(QColor('#1e293b'), 2.2))
+            painter.drawLine(-14, -7, -14, 7)
+            painter.drawLine(14, -7, 14, 7)
+
+            # 中心虚线路标
+            painter.setPen(QPen(QColor('#f8fafc'), 1.0, Qt.DashLine))
+            painter.drawLine(-11, 0, 11, 0)
+
+            # 朝向引导箭头 (青蓝色，直观指示河流横跨与行进朝向)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor('#38bdf8')))
+            arrow = QPainterPath()
+            arrow.moveTo(15, 0)
+            arrow.lineTo(9, -4)
+            arrow.lineTo(10, 0)
+            arrow.lineTo(9, 4)
+            arrow.closeSubpath()
+            painter.drawPath(arrow)
+
+            painter.restore()
+
+        # 5. 训练营: 中世纪圆形营帐 (Medieval Round Pavilion)
+        elif cat == 'training_camp':
+            # 圆形底座
+            painter.setPen(QPen(QColor('#052e16'), 1.5))
+            painter.setBrush(QBrush(QColor('#f8fafc')))
+            painter.drawEllipse(QRectF(-9, -2, 18, 9))
+            
+            # 圆锥形屋顶
+            tent = QPainterPath()
+            tent.moveTo(0, -13)
+            tent.lineTo(10, 2)
+            tent.lineTo(-10, 2)
+            tent.closeSubpath()
+            painter.setBrush(QBrush(QColor('#16a34a')))
+            painter.drawPath(tent)
+            
+            # 帐篷纹饰
+            painter.setPen(QPen(QColor('#052e16'), 1.0))
+            painter.drawLine(0, -13, 0, 2)
+            painter.drawLine(0, -13, -5, 2)
+            painter.drawLine(0, -13, 5, 2)
+
+            # 顶部小红旗
+            flag = QPainterPath()
+            flag.moveTo(0, -13)
+            flag.lineTo(0, -19)
+            flag.lineTo(6, -16)
+            flag.closeSubpath()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor('#dc2626')))
+            painter.drawPath(flag)
+
+        # 6. 特殊独立场景/原版遗留/彩蛋: 古典神庙山墙多立克柱 (Classical Relic)
+        elif cat == 'special_scene':
+            painter.setPen(QPen(QColor('#3b0764'), 1.5))
+            # 基座台阶
+            painter.setBrush(QBrush(QColor('#7e22ce')))
+            painter.drawRect(QRectF(-10, 6, 20, 4))
+            # 三角山墙
+            pediment = QPainterPath()
+            pediment.moveTo(0, -11)
+            pediment.lineTo(11, -4)
+            pediment.lineTo(-11, -4)
+            pediment.closeSubpath()
+            painter.drawPath(pediment)
+            # 3 根石柱
+            painter.setBrush(QBrush(QColor('#c084fc')))
+            painter.drawRect(QRectF(-8, -4, 3.5, 10))
+            painter.drawRect(QRectF(-1.75, -4, 3.5, 10))
+            painter.drawRect(QRectF(4.5, -4, 3.5, 10))
+
+        # 7. 野怪与强盗刷新点: 警戒菱形与交叉利刃 (Danger Ambush Reticle)
+        elif cat == 'spawn_point':
+            painter.setPen(QPen(QColor('#7c2d12'), 1.5))
+            painter.setBrush(QBrush(QColor('#ea580c')))
+            diamond = QPainterPath()
+            diamond.moveTo(0, -10)
+            diamond.lineTo(10, 0)
+            diamond.lineTo(0, 10)
+            diamond.lineTo(-10, 0)
+            diamond.closeSubpath()
+            painter.drawPath(diamond)
+            # 交叉刀锋
+            painter.setPen(QPen(QColor('#ffffff'), 1.8))
+            painter.drawLine(-7, -7, 7, 7)
+            painter.drawLine(7, -7, -7, 7)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor('#fbbf24')))
+            painter.drawEllipse(QRectF(-2.5, -2.5, 5, 5))
+
+        # 8. 引擎底层系统隐匿项 (虚线齿轮占位符，仅在勾选显示时绘制)
+        elif cat == 'hidden_system':
+            painter.setPen(QPen(QColor('#64748b'), 1.2, Qt.DashLine))
+            painter.setBrush(QBrush(QColor(100, 116, 139, 45)))
+            painter.drawEllipse(QRectF(-7, -7, 14, 14))
+            painter.setPen(QPen(QColor('#94a3b8'), 1.0))
+            painter.drawLine(-4, 0, 4, 0)
+            painter.drawLine(0, -4, 0, 4)
+
+    def wheelEvent(self, event):
+        # 桥梁专属滚轮旋转交互：Alt+滚轮 或 据点工具下直接滚轮
+        if self.party.get('category') == 'bridge' and (event.modifiers() & Qt.AltModifier or self.editor.active_tool == 'party'):
+            delta_deg = 5.0 if event.delta() > 0 else -5.0
+            self.editor.rotate_selected_bridge(delta_deg)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.editor.active_tool == 'party' and self.party.get('category') == 'bridge':
+            dist = math.hypot(event.pos().x(), event.pos().y())
+            # 点击在外圈 (10 - 20 半径之间) 则进行旋转
+            if 10 < dist <= self.hit_radius:
+                self._is_rotating = True
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._is_rotating:
+            # 根据鼠标相对中心的角度计算朝向，+X方向为 0，顺时针为正 (通常 y 向下)
+            angle_rad = math.atan2(event.pos().y(), event.pos().x())
+            # map_editor 中 Y 轴朝上绘制桥梁是负角度，我们需要转为引擎顺时针角度 (Warband地图坐标通常是顺时针正)
+            # 这里统一由 editor 控制角度计算
+            self.party['angle'] = -angle_rad
+            
+            # 更新状态提示并重绘
+            deg = math.degrees(self.party['angle'])
+            self.editor.is_modified = True
+            
+            # 更新UI (若选中桥梁，会更新控制面板的 Label)
+            if hasattr(self.editor, 'lbl_bridge_heading') and self.isSelected():
+                self.editor.lbl_bridge_heading.setText(f"🌉 桥梁朝向: {deg:.1f}° ({-angle_rad:.3f} rad)")
+            
+            self.editor.update_status(f"旋转桥梁 {self.party['display_name']} 朝向至 {deg:.1f}°")
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._is_rotating:
+            self._is_rotating = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and self.scene():
@@ -85,7 +543,7 @@ class PartyItem(QGraphicsItem):
             game_x, game_y = self.editor.pixel_to_game(new_pos.x(), new_pos.y())
             self.party['x'] = game_x
             self.party['y'] = game_y
-            self.editor.update_status(f"移动据点 {self.party['name']} 至 ({game_x:.2f}, {game_y:.2f})")
+            self.editor.update_status(f"移动据点 {self.party['display_name']} 至 ({game_x:.2f}, {game_y:.2f})")
         return super().itemChange(change, value)
 
 
@@ -311,6 +769,7 @@ class MapEditor(QMainWindow):
         """)
         
         self.scene = QGraphicsScene()
+        self.scene.selectionChanged.connect(self.on_map_selection_changed)
         self.view = MapView(self.scene, self)
         self.setCentralWidget(self.view)
         
@@ -438,6 +897,19 @@ class MapEditor(QMainWindow):
         btn_reset_zoom.setToolTip("重置视角与比例")
         btn_reset_zoom.clicked.connect(self.reset_view)
         right_layout.addWidget(btn_reset_zoom)
+
+        sep_grid = QFrame()
+        sep_grid.setFrameShape(QFrame.VLine)
+        sep_grid.setStyleSheet("color: #cbd5e1; margin: 2px 4px;")
+        right_layout.addWidget(sep_grid)
+
+        self.btn_toggle_grid = QToolButton()
+        self.btn_toggle_grid.setText("🌐 网格")
+        self.btn_toggle_grid.setCheckable(True)
+        self.btn_toggle_grid.setChecked(True)
+        self.btn_toggle_grid.setToolTip("显示/隐藏地图坐标网格")
+        self.btn_toggle_grid.toggled.connect(self.toggle_grid)
+        right_layout.addWidget(self.btn_toggle_grid)
         
         self.top_toolbar.addWidget(right_pill)
         
@@ -445,12 +917,181 @@ class MapEditor(QMainWindow):
         self.dock_parties = QDockWidget("据点列表 (Parties)", self)
         self.dock_parties.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         parties_widget = QWidget()
+        parties_widget.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e2e;
+                color: #cdd6f4;
+            }
+            QLineEdit {
+                background-color: #313244;
+                color: #cdd6f4;
+                border: 1px solid #45475a;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #89b4fa;
+            }
+            QComboBox {
+                background-color: #313244;
+                color: #cdd6f4;
+                border: 1px solid #45475a;
+                border-radius: 4px;
+                padding: 5px 8px;
+                font-size: 12px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #181825;
+                color: #cdd6f4;
+                selection-background-color: #45475a;
+                selection-color: #89b4fa;
+            }
+            QListWidget {
+                background-color: #181825;
+                color: #cdd6f4;
+                border: 1px solid #313244;
+                border-radius: 6px;
+                padding: 4px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 6px 8px;
+                border-radius: 4px;
+                color: #cdd6f4;
+                margin-bottom: 2px;
+            }
+            QListWidget::item:hover {
+                background-color: #313244;
+                color: #89b4fa;
+            }
+            QListWidget::item:selected {
+                background-color: #1e66f5;
+                color: #ffffff;
+                font-weight: bold;
+            }
+        """)
         pl = QVBoxLayout(parties_widget)
+        pl.setContentsMargins(6, 6, 6, 6)
+        pl.setSpacing(6)
+
+        # 搜索过滤框
         self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("🔍 过滤据点...")
-        self.filter_input.textChanged.connect(self.filter_list)
+        self.filter_input.setPlaceholderText("🔍 过滤据点名称 / ID...")
+        self.filter_input.textChanged.connect(self.apply_party_filters)
         pl.addWidget(self.filter_input)
-        
+
+        # 据点分类过滤器
+        self.combo_category = QComboBox()
+        self.combo_category.addItem("🎯 全部地点类型", "all")
+        self.combo_category.addItem("🏰 城镇 (Town)", "town")
+        self.combo_category.addItem("🛡️ 堡垒 (Castle)", "castle")
+        self.combo_category.addItem("🌾 村庄 (Village)", "village")
+        self.combo_category.addItem("🌉 桥梁 (Bridge - 旋转朝向)", "bridge")
+        self.combo_category.addItem("⛺ 训练营 (Camp)", "training_camp")
+        self.combo_category.addItem("🏛️ 遗留/特殊场景 (Relic)", "special_scene")
+        self.combo_category.addItem("⚔️ 野怪刷新点 (Spawn)", "spawn_point")
+        self.combo_category.currentIndexChanged.connect(self.apply_party_filters)
+        pl.addWidget(self.combo_category)
+
+        # 选项栏：隐匿项过滤与统计计数
+        opt_layout = QHBoxLayout()
+        self.cb_show_hidden = QCheckBox("显示 {!} 引擎项")
+        self.cb_show_hidden.setChecked(False)
+        self.cb_show_hidden.setToolTip("开启后可查看与编辑带 {!} 引擎占位、伤亡记录和系统标记（默认隐匿）")
+        self.cb_show_hidden.setStyleSheet("QCheckBox { color: #a6adc8; font-size: 11px; }")
+        self.cb_show_hidden.toggled.connect(self.on_toggle_show_hidden)
+        opt_layout.addWidget(self.cb_show_hidden)
+
+        self.lbl_party_stats = QLabel("共 0 个据点")
+        self.lbl_party_stats.setStyleSheet("color: #6c7086; font-size: 11px;")
+        self.lbl_party_stats.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        opt_layout.addWidget(self.lbl_party_stats)
+        pl.addLayout(opt_layout)
+
+        # 据点属性面板 (包含阵营、模型图标、桥梁旋转等)
+        self.party_properties_panel = QFrame()
+        self.party_properties_panel.setStyleSheet("""
+            QFrame {
+                background-color: #181825;
+                border: 1px solid #45475a;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QLabel { color: #cdd6f4; font-size: 12px; }
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                border: 1px solid #45475a;
+                border-radius: 3px;
+                padding: 3px 6px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+                color: #89b4fa;
+            }
+            QComboBox, QSpinBox {
+                background-color: #313244;
+                color: #cdd6f4;
+                border: 1px solid #45475a;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 12px;
+            }
+        """)
+        prop_layout = QVBoxLayout(self.party_properties_panel)
+        prop_layout.setContentsMargins(4, 4, 4, 4)
+        prop_layout.setSpacing(6)
+
+        # 阵营选择
+        fac_layout = QHBoxLayout()
+        fac_layout.addWidget(QLabel("🏴 阵营:"))
+        self.combo_properties_faction = QComboBox()
+        # 实际选项会在 update_properties_panel 中动态填充
+        self.combo_properties_faction.currentIndexChanged.connect(self.on_faction_changed)
+        fac_layout.addWidget(self.combo_properties_faction)
+        prop_layout.addLayout(fac_layout)
+
+        # 地图图标 (Map Icon) 选择
+        icon_layout = QHBoxLayout()
+        icon_layout.addWidget(QLabel("🗿 图标 (Icon ID):"))
+        self.spin_properties_icon = QSpinBox()
+        self.spin_properties_icon.setRange(0, 255)
+        self.spin_properties_icon.valueChanged.connect(self.on_icon_changed)
+        icon_layout.addWidget(self.spin_properties_icon)
+        prop_layout.addLayout(icon_layout)
+
+        # 桥梁专属旋转调校
+        self.bridge_control_widget = QWidget()
+        b_box = QVBoxLayout(self.bridge_control_widget)
+        b_box.setContentsMargins(0, 0, 0, 0)
+        self.lbl_bridge_heading = QLabel("🌉 桥梁朝向: 0.0°")
+        self.lbl_bridge_heading.setStyleSheet("color: #89dceb; font-weight: bold; font-size: 11px;")
+        b_box.addWidget(self.lbl_bridge_heading)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        btn_m15 = QPushButton("-15°")
+        btn_m15.clicked.connect(lambda: self.rotate_selected_bridge(-15))
+        btn_row.addWidget(btn_m15)
+        btn_m5 = QPushButton("-5°")
+        btn_m5.clicked.connect(lambda: self.rotate_selected_bridge(-5))
+        btn_row.addWidget(btn_m5)
+        btn_p5 = QPushButton("+5°")
+        btn_p5.clicked.connect(lambda: self.rotate_selected_bridge(5))
+        btn_row.addWidget(btn_p5)
+        btn_p15 = QPushButton("+15°")
+        btn_p15.clicked.connect(lambda: self.rotate_selected_bridge(15))
+        btn_row.addWidget(btn_p15)
+        b_box.addLayout(btn_row)
+        prop_layout.addWidget(self.bridge_control_widget)
+
+        self.party_properties_panel.hide()
+        pl.addWidget(self.party_properties_panel)
+
         self.list_widget = QListWidget()
         self.list_widget.itemClicked.connect(self.on_list_click)
         pl.addWidget(self.list_widget)
@@ -503,19 +1144,18 @@ class MapEditor(QMainWindow):
             }
         """)
         
-        act_open_map = menu.addAction("📁 打开 map.txt (大地图网格)")
-        act_open_map.triggered.connect(self.load_maptxt)
-        
-        act_open_parties = menu.addAction("📁 打开 parties.txt (据点坐标)")
-        act_open_parties.triggered.connect(self.load_parties)
-        
-        menu.addSeparator()
-        
+        # 集成到主工作区，省略独立的打开菜单项
         act_save = menu.addAction("📄 保存文件 (Save All)\tCtrl+S")
         act_save.triggered.connect(self.save_all)
         
-        act_export = menu.addAction("🖼 导出图片 (Export Image)\tCtrl+Shift+E")
+        act_export = menu.addAction("🖼 导出地图全景图 (PNG)\tCtrl+Shift+E")
         act_export.triggered.connect(self.export_image)
+
+        act_export_chart = menu.addAction("📊 导出势力据点坐标分布图 (PNG)")
+        act_export_chart.triggered.connect(self.export_coordinate_chart)
+
+        act_export_csv = menu.addAction("📋 导出据点坐标数据 (CSV)")
+        act_export_csv.triggered.connect(self.export_coordinate_csv)
         
         menu.addSeparator()
         
@@ -587,12 +1227,13 @@ class MapEditor(QMainWindow):
         painter = QPainter(self.map_pixmap)
         painter.setPen(Qt.NoPen)
         for f_idx, old_t, new_t in record:
-            to_redo.append((f_idx, old_t, new_t))
-            self.faces[f_idx]['terrain'] = old_t
-            painter.setBrush(TERRAIN_COLORS[old_t])
-            v1, v2, v3 = self.vertices[self.faces[f_idx]['v1']], self.vertices[self.faces[f_idx]['v2']], self.vertices[self.faces[f_idx]['v3']]
-            p1, p2, p3 = self.game_to_pixel_pt(v1[0], v1[1]), self.game_to_pixel_pt(v2[0], v2[1]), self.game_to_pixel_pt(v3[0], v3[1])
-            painter.drawPolygon(QPolygonF([p1, p2, p3]))
+            if 0 <= f_idx < len(self.faces):
+                to_redo.append((f_idx, old_t, new_t))
+                self.faces[f_idx]['terrain'] = old_t
+                painter.setBrush(TERRAIN_COLORS.get(old_t, QColor(255, 0, 255)))
+                v1, v2, v3 = self.vertices[self.faces[f_idx]['v1']], self.vertices[self.faces[f_idx]['v2']], self.vertices[self.faces[f_idx]['v3']]
+                p1, p2, p3 = self.game_to_pixel_pt(v1[0], v1[1]), self.game_to_pixel_pt(v2[0], v2[1]), self.game_to_pixel_pt(v3[0], v3[1])
+                painter.drawPolygon(QPolygonF([p1, p2, p3]))
         painter.end()
         self.map_pixmap_item.setPixmap(self.map_pixmap)
         self.redo_stack.append(to_redo)
@@ -608,12 +1249,13 @@ class MapEditor(QMainWindow):
         painter = QPainter(self.map_pixmap)
         painter.setPen(Qt.NoPen)
         for f_idx, old_t, new_t in record:
-            to_undo.append((f_idx, old_t, new_t))
-            self.faces[f_idx]['terrain'] = new_t
-            painter.setBrush(TERRAIN_COLORS[new_t])
-            v1, v2, v3 = self.vertices[self.faces[f_idx]['v1']], self.vertices[self.faces[f_idx]['v2']], self.vertices[self.faces[f_idx]['v3']]
-            p1, p2, p3 = self.game_to_pixel_pt(v1[0], v1[1]), self.game_to_pixel_pt(v2[0], v2[1]), self.game_to_pixel_pt(v3[0], v3[1])
-            painter.drawPolygon(QPolygonF([p1, p2, p3]))
+            if 0 <= f_idx < len(self.faces):
+                to_undo.append((f_idx, old_t, new_t))
+                self.faces[f_idx]['terrain'] = new_t
+                painter.setBrush(TERRAIN_COLORS.get(new_t, QColor(255, 0, 255)))
+                v1, v2, v3 = self.vertices[self.faces[f_idx]['v1']], self.vertices[self.faces[f_idx]['v2']], self.vertices[self.faces[f_idx]['v3']]
+                p1, p2, p3 = self.game_to_pixel_pt(v1[0], v1[1]), self.game_to_pixel_pt(v2[0], v2[1]), self.game_to_pixel_pt(v3[0], v3[1])
+                painter.drawPolygon(QPolygonF([p1, p2, p3]))
         painter.end()
         self.map_pixmap_item.setPixmap(self.map_pixmap)
         self.undo_stack.append(to_undo)
@@ -624,11 +1266,414 @@ class MapEditor(QMainWindow):
         if not self.map_pixmap:
             QMessageBox.warning(self, "提示", "尚未渲染大地图，无法导出。")
             return
-        filepath, _ = QFileDialog.getSaveFileName(self, "导出地图全景图", "world_map.png", "PNG 图片 (*.png);;JPEG 图片 (*.jpg)")
-        if filepath:
-            self.map_pixmap.save(filepath)
-            self.update_status(f"地图已导出至: {filepath}")
-            QMessageBox.information(self, "导出成功", f"地图已成功导出到:\n{filepath}")
+        filepath, _ = QFileDialog.getSaveFileName(self, "导出地图全景图 (含经纬网格)", "world_map_grid.png", "PNG 图片 (*.png);;JPEG 图片 (*.jpg)")
+        if not filepath:
+            return
+
+        # ---- 计算边距与画布尺寸 ----
+        margin_left = 60      # 左侧留给 Y 轴刻度标签
+        margin_right = 30
+        margin_top = 44       # 顶部标题
+        margin_bottom = 50    # 底部 X 轴刻度标签
+        canvas_w = self.img_width + margin_left + margin_right
+        canvas_h = self.img_height + margin_top + margin_bottom
+
+        canvas = QImage(canvas_w, canvas_h, QImage.Format_ARGB32)
+        canvas.fill(QColor("#0e0e12"))
+
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        # ---- 绘制地形底图 ----
+        painter.drawPixmap(margin_left, margin_top, self.map_pixmap)
+
+        # ---- 坐标网格 overlay ----
+        step = 20  # 游戏坐标间距
+        min_gx = math.floor(self.min_x / step) * step
+        max_gx = math.ceil(self.max_x / step) * step
+        min_gy = math.floor(self.min_y / step) * step
+        max_gy = math.ceil(self.max_y / step) * step
+
+        # 次网格 (细线, 每 10 单位)
+        sub_pen = QPen(QColor(255, 255, 255, 30), 1, Qt.DotLine)
+        sub_step = 10
+        sub_x = math.floor(self.min_x / sub_step) * sub_step
+        while sub_x <= max_gx:
+            if sub_x % step != 0:  # 跳过主线位置
+                p_top = self.game_to_pixel_pt(sub_x, self.max_y)
+                p_bot = self.game_to_pixel_pt(sub_x, self.min_y)
+                painter.setPen(sub_pen)
+                painter.drawLine(
+                    QPointF(p_top.x() + margin_left, p_top.y() + margin_top),
+                    QPointF(p_bot.x() + margin_left, p_bot.y() + margin_top)
+                )
+            sub_x += sub_step
+        sub_y = math.floor(self.min_y / sub_step) * sub_step
+        while sub_y <= max_gy:
+            if sub_y % step != 0:
+                p_left = self.game_to_pixel_pt(self.min_x, sub_y)
+                p_right = self.game_to_pixel_pt(self.max_x, sub_y)
+                painter.setPen(sub_pen)
+                painter.drawLine(
+                    QPointF(p_left.x() + margin_left, p_left.y() + margin_top),
+                    QPointF(p_right.x() + margin_left, p_right.y() + margin_top)
+                )
+            sub_y += sub_step
+
+        # 主网格 (实线, 每 step 单位)
+        grid_pen = QPen(QColor(255, 255, 255, 70), 1, Qt.SolidLine)
+        tick_font = QFont("Monospace", 9, QFont.Bold)
+        painter.setFont(tick_font)
+
+        # 纵向经线 (X = const) + 底部 X 轴刻度
+        curr_x = min_gx
+        while curr_x <= max_gx:
+            p_top = self.game_to_pixel_pt(curr_x, self.max_y)
+            p_bot = self.game_to_pixel_pt(curr_x, self.min_y)
+            px = p_top.x() + margin_left
+
+            # 网格线
+            painter.setPen(grid_pen)
+            painter.drawLine(QPointF(px, margin_top), QPointF(px, margin_top + self.img_height))
+
+            # 底部刻度标签
+            painter.setPen(QColor(200, 200, 200, 220))
+            label = str(int(curr_x))
+            fm = QFontMetrics(tick_font)
+            tw = fm.horizontalAdvance(label)
+            painter.drawText(
+                QRectF(px - tw / 2, margin_top + self.img_height + 6, tw + 4, 20),
+                Qt.AlignCenter, label
+            )
+
+            # 顶部短刻度线
+            painter.setPen(QPen(QColor(255, 255, 255, 100), 1))
+            painter.drawLine(QPointF(px, margin_top - 4), QPointF(px, margin_top))
+
+            curr_x += step
+
+        # 横向纬线 (Y = const) + 左侧 Y 轴刻度
+        curr_y = min_gy
+        while curr_y <= max_gy:
+            p_left = self.game_to_pixel_pt(self.min_x, curr_y)
+            py = p_left.y() + margin_top
+
+            # 网格线
+            painter.setPen(grid_pen)
+            painter.drawLine(QPointF(margin_left, py), QPointF(margin_left + self.img_width, py))
+
+            # 左侧刻度标签
+            painter.setPen(QColor(200, 200, 200, 220))
+            label = str(int(curr_y))
+            painter.drawText(
+                QRectF(2, py - 10, margin_left - 6, 20),
+                Qt.AlignRight | Qt.AlignVCenter, label
+            )
+
+            # 左侧短刻度线
+            painter.setPen(QPen(QColor(255, 255, 255, 100), 1))
+            painter.drawLine(QPointF(margin_left - 4, py), QPointF(margin_left, py))
+
+            curr_y += step
+
+        # ---- 地图边框 ----
+        painter.setPen(QPen(QColor(255, 255, 255, 120), 1.5))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(margin_left, margin_top, self.img_width, self.img_height))
+
+        # ---- 据点标记 ----
+        show_hidden = self.cb_show_hidden.isChecked() if hasattr(self, 'cb_show_hidden') else False
+        marker_font = QFont("Arial", 7, QFont.Bold)
+        painter.setFont(marker_font)
+
+        for party in self.parties:
+            cat = party.get('category', 'special_scene')
+            if cat == 'hidden_system' and not show_hidden:
+                continue
+            cat_info = CATEGORY_META.get(cat, CATEGORY_META['special_scene'])
+            color = QColor(cat_info['color'])
+
+            pt = self.game_to_pixel_pt(party['x'], party['y'])
+            px = pt.x() + margin_left
+            py = pt.y() + margin_top
+
+            # 外圈光晕
+            painter.setPen(Qt.NoPen)
+            glow = QColor(color)
+            glow.setAlpha(60)
+            painter.setBrush(glow)
+            painter.drawEllipse(QPointF(px, py), 6, 6)
+
+            # 实心标记点
+            painter.setPen(QPen(QColor(0, 0, 0, 180), 1))
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(px, py), 3.5, 3.5)
+
+            # 名称标签 (仅城镇/堡垒/村庄)
+            if cat in ('town', 'castle', 'village'):
+                painter.setPen(QColor(255, 255, 255, 200))
+                painter.drawText(int(px + 6), int(py + 3), party['display_name'])
+
+        # ---- 轴标题 ----
+        title_font = QFont("sans-serif", 11, QFont.Bold)
+        painter.setFont(title_font)
+        painter.setPen(QColor("#e4e4e7"))
+
+        # 底部 X 轴标题
+        painter.drawText(
+            QRectF(margin_left, canvas_h - 22, self.img_width, 20),
+            Qt.AlignCenter, "X (东 → 西)"
+        )
+
+        # 左侧 Y 轴标题 (旋转绘制)
+        painter.save()
+        painter.translate(14, margin_top + self.img_height / 2)
+        painter.rotate(-90)
+        painter.drawText(QRectF(-80, -10, 160, 20), Qt.AlignCenter, "Y (南 → 北)")
+        painter.restore()
+
+        # 顶部标题
+        painter.setFont(QFont("sans-serif", 12, QFont.Bold))
+        painter.setPen(QColor("#a1a1aa"))
+        painter.drawText(
+            QRectF(margin_left, 4, self.img_width, margin_top - 6),
+            Qt.AlignCenter,
+            f"Warband Map — 坐标网格 [{int(self.min_x)},{int(self.min_y)}] → [{int(self.max_x)},{int(self.max_y)}]  (step={step})"
+        )
+
+        painter.end()
+        canvas.save(filepath)
+        self.update_status(f"地图已导出至: {filepath}")
+        QMessageBox.information(self, "导出成功", f"含坐标经纬网格的地图已成功导出到:\n{filepath}")
+
+    def toggle_grid(self, checked):
+        if hasattr(self, 'grid_group') and self.grid_group:
+            self.grid_group.setVisible(checked)
+            self.update_status(f"坐标网格: {'显示' if checked else '隐藏'}")
+
+    def draw_grid(self):
+        if not hasattr(self, 'vertices') or not self.vertices:
+            return
+        if hasattr(self, 'grid_group') and self.grid_group:
+            if self.grid_group.scene():
+                self.scene.removeItem(self.grid_group)
+
+        self.grid_group = QGraphicsItemGroup()
+        self.grid_group.setZValue(1)
+
+        step = 20
+        min_gx = math.floor(self.min_x / step) * step
+        max_gx = math.ceil(self.max_x / step) * step
+        min_gy = math.floor(self.min_y / step) * step
+        max_gy = math.ceil(self.max_y / step) * step
+
+        pen = QPen(QColor(255, 255, 255, 55), 1, Qt.DashLine)
+        font = QFont("Monospace", 8, QFont.Bold)
+
+        # 纵向经线 (X = const)
+        curr_x = min_gx
+        while curr_x <= max_gx:
+            p_top = self.game_to_pixel_pt(curr_x, self.max_y)
+            p_bot = self.game_to_pixel_pt(curr_x, self.min_y)
+            line = QGraphicsLineItem(p_top.x(), p_top.y(), p_bot.x(), p_bot.y())
+            line.setPen(pen)
+            self.grid_group.addToGroup(line)
+
+            txt = QGraphicsSimpleTextItem(f"X:{int(curr_x)}")
+            txt.setFont(font)
+            txt.setBrush(QBrush(QColor(255, 255, 255, 175)))
+            txt.setPos(p_top.x() + 2, p_top.y() + 4)
+            self.grid_group.addToGroup(txt)
+            curr_x += step
+
+        # 横向纬线 (Y = const)
+        curr_y = min_gy
+        while curr_y <= max_gy:
+            p_left = self.game_to_pixel_pt(self.min_x, curr_y)
+            p_right = self.game_to_pixel_pt(self.max_x, curr_y)
+            line = QGraphicsLineItem(p_left.x(), p_left.y(), p_right.x(), p_right.y())
+            line.setPen(pen)
+            self.grid_group.addToGroup(line)
+
+            txt = QGraphicsSimpleTextItem(f"Y:{int(curr_y)}")
+            txt.setFont(font)
+            txt.setBrush(QBrush(QColor(255, 255, 255, 175)))
+            txt.setPos(p_left.x() + 4, p_left.y() - 14)
+            self.grid_group.addToGroup(txt)
+            curr_y += step
+
+        self.scene.addItem(self.grid_group)
+        is_visible = getattr(self, 'btn_toggle_grid', None) and self.btn_toggle_grid.isChecked()
+        self.grid_group.setVisible(bool(is_visible))
+
+    def export_coordinate_chart(self):
+        if not self.parties:
+            QMessageBox.warning(self, "提示", "尚未加载据点数据，无法生成坐标图。")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出势力据点坐标分布图",
+            "faction_territories_coordinates.png",
+            "PNG 图片 (*.png)"
+        )
+        if not filepath:
+            return
+
+        FACTION_COLORS = {
+            "fac_kingdom_1": (QColor("#3b82f6"), "France"),
+            "fac_kingdom_2": (QColor("#f97316"), "Britain"),
+            "fac_kingdom_3": (QColor("#10b981"), "Netherlands"),
+            "fac_kingdom_4": (QColor("#eab308"), "Prussia"),
+            "fac_kingdom_5": (QColor("#ec4899"), "German_Alliance"),
+            "fac_kingdom_6": (QColor("#22c55e"), "Habsburg"),
+        }
+        FALLBACK_PALETTE = [
+            QColor("#38bdf8"), QColor("#fb923c"), QColor("#34d399"),
+            QColor("#facc15"), QColor("#f472b6"), QColor("#4ade80"),
+            QColor("#a78bfa"), QColor("#2dd4bf"), QColor("#fb7185")
+        ]
+
+        present_factions = sorted(list({p['faction'] for p in self.parties if p.get('faction')}))
+        faction_map = {}
+        for idx, fac in enumerate(present_factions):
+            if fac in FACTION_COLORS:
+                color, name = FACTION_COLORS[fac]
+            else:
+                color = FALLBACK_PALETTE[idx % len(FALLBACK_PALETTE)]
+                name = fac.replace("fac_", "").replace("_", " ").title()
+            faction_map[fac] = (color, name)
+
+        xs = [p['x'] for p in self.parties]
+        ys = [p['y'] for p in self.parties]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        step = 20
+        plot_min_x = math.floor((min_x - 10) / step) * step
+        plot_max_x = math.ceil((max_x + 10) / step) * step
+        plot_min_y = math.floor((min_y - 10) / step) * step
+        plot_max_y = math.ceil((max_y + 10) / step) * step
+
+        img_w, img_h = 1300, 680
+        image = QImage(img_w, img_h, QImage.Format_ARGB32)
+        image.fill(QColor("#111215"))
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        # 主卡片外框
+        card_rect = QRectF(24, 20, img_w - 48, img_h - 40)
+        painter.setPen(QPen(QColor("#27272a"), 1.5))
+        painter.setBrush(QColor("#18181b"))
+        painter.drawRoundedRect(card_rect, 14, 14)
+
+        # 标题与副标题
+        painter.setFont(QFont("sans-serif", 15, QFont.Bold))
+        painter.setPen(QColor("#f4f4f5"))
+        painter.drawText(int(card_rect.left() + 24), int(card_rect.top() + 38), "1815 Mod — redesigned faction territories (each cluster now contiguous)")
+
+        painter.setFont(QFont("sans-serif", 10))
+        painter.setPen(QColor("#a1a1aa"))
+        painter.drawText(int(card_rect.left() + 24), int(card_rect.top() + 64), "south - north by west - east")
+
+        plot_l = card_rect.left() + 60
+        plot_t = card_rect.top() + 90
+        plot_r = card_rect.right() - 40
+        plot_b = card_rect.bottom() - 80
+        plot_w = plot_r - plot_l
+        plot_h = plot_b - plot_t
+
+        def to_plot(gx, gy):
+            px = plot_l + (gx - plot_min_x) / (plot_max_x - plot_min_x) * plot_w
+            py = plot_b - (gy - plot_min_y) / (plot_max_y - plot_min_y) * plot_h
+            return px, py
+
+        # 网格与坐标轴
+        grid_pen = QPen(QColor("#27272a"), 1, Qt.SolidLine)
+        painter.setFont(QFont("sans-serif", 9))
+
+        cx = plot_min_x
+        while cx <= plot_max_x:
+            px, _ = to_plot(cx, 0)
+            painter.setPen(grid_pen)
+            painter.drawLine(QPointF(px, plot_t), QPointF(px, plot_b))
+            painter.setPen(QColor("#71717a"))
+            painter.drawText(QRectF(px - 30, plot_b + 6, 60, 20), Qt.AlignCenter, f"{int(cx)}")
+            cx += step
+
+        cy = plot_min_y
+        while cy <= plot_max_y:
+            _, py = to_plot(0, cy)
+            painter.setPen(grid_pen)
+            painter.drawLine(QPointF(plot_l, py), QPointF(plot_r, py))
+            painter.setPen(QColor("#71717a"))
+            painter.drawText(QRectF(plot_l - 45, py - 10, 36, 20), Qt.AlignRight | Qt.AlignVCenter, f"{int(cy)}")
+            cy += step
+
+        # 绘制据点散点
+        for p in self.parties:
+            fac = p.get('faction', '')
+            color, _ = faction_map.get(fac, (QColor("#94a3b8"), fac))
+            px, py = to_plot(p['x'], p['y'])
+
+            painter.setPen(QPen(QColor(255, 255, 255, 50), 1.5))
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(px, py), 5.5, 5.5)
+
+        # 底部图例
+        leg_x = plot_l
+        leg_y = card_rect.bottom() - 32
+        painter.setFont(QFont("sans-serif", 10, QFont.Bold))
+
+        for fac, (color, name) in faction_map.items():
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(leg_x + 5, leg_y - 4), 4.5, 4.5)
+
+            painter.setPen(QColor("#d4d4d8"))
+            painter.drawText(int(leg_x + 16), int(leg_y), name)
+
+            metrics = QFontMetrics(painter.font())
+            text_w = metrics.horizontalAdvance(name)
+            leg_x += text_w + 32
+            if leg_x > plot_r - 80:
+                leg_x = plot_l
+                leg_y += 20
+
+        painter.end()
+        image.save(filepath)
+        QMessageBox.information(self, "导出成功", f"势力据点坐标分布图已保存至:\n{filepath}")
+
+    def export_coordinate_csv(self):
+        if not self.parties:
+            QMessageBox.warning(self, "提示", "尚未加载据点数据，无法导出。")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出据点坐标数据",
+            "parties_coordinates.csv",
+            "CSV 表格 (*.csv)"
+        )
+        if not filepath:
+            return
+
+        import csv
+        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["id", "name", "display_name", "category", "faction", "x", "y", "angle_deg", "angle_rad"])
+            for p in self.parties:
+                deg = math.degrees(p.get('angle', 0.0))
+                writer.writerow([
+                    p['id'], p['name'], p.get('display_name', p['name']),
+                    p.get('category', 'special_scene'), p.get('faction', ''),
+                    p['x'], p['y'], f"{deg:.2f}", f"{p.get('angle', 0.0):.6f}"
+                ])
+
+        QMessageBox.information(self, "导出成功", f"据点坐标数据已成功导出至:\n{filepath}")
 
     def get_face_at(self, scene_pos):
         if not self.id_map_image: return -1
@@ -727,8 +1772,9 @@ class MapEditor(QMainWindow):
         self.undo_stack.append(record)
         self.redo_stack.clear()
 
-    def load_maptxt(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "打开 map.txt", ".", "Text Files (*.txt)")
+    def load_maptxt(self, filepath=None):
+        if not filepath:
+            filepath, _ = QFileDialog.getOpenFileName(self, "打开 map.txt", ".", "Text Files (*.txt)")
         if not filepath: return
         self.status_bar.showMessage("正在解析原生 map.txt 几何数据...")
         QApplication.processEvents()
@@ -738,6 +1784,8 @@ class MapEditor(QMainWindow):
             
         self.vertices = []
         self.faces = []
+        self.undo_stack.clear()
+        self.redo_stack.clear()
         
         idx = 0
         num_verts = int(lines[idx].strip())
@@ -844,41 +1892,288 @@ class MapEditor(QMainWindow):
         self.map_pixmap_item = self.scene.addPixmap(self.map_pixmap)
         self.map_pixmap_item.setZValue(-1)
         self.scene.setSceneRect(0, 0, self.img_width, self.img_height)
+        self.draw_grid()
         self.draw_parties()
         
-    def load_parties(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "打开 parties.txt", ".", "Text Files (*.txt)")
+    def load_parties(self, filepath=None):
+        if not filepath:
+            filepath, _ = QFileDialog.getOpenFileName(self, "打开 parties.txt", ".", "Text Files (*.txt)")
         if not filepath: return
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             self.original_parties_lines = f.readlines()
             
         self.parties = []
-        self.list_widget.clear()
         
         for i in range(2, len(self.original_parties_lines), 2):
             if i >= len(self.original_parties_lines) - 1: break
             line1 = self.original_parties_lines[i]
             parts = line1.strip().split()
             if len(parts) < 20: continue
+
+            # 读取第二行朝向角度 (弧度)
+            angle = 0.0
+            if i + 1 < len(self.original_parties_lines):
+                try:
+                    angle = float(self.original_parties_lines[i + 1].strip())
+                except ValueError:
+                    angle = 0.0
+
+            raw_id = parts[3]
+            raw_name = parts[4]
+            cat = categorize_party(raw_id, raw_name)
+
+            # 生成人性化显示名称
+            if cat == 'bridge':
+                clean_num = raw_name.replace('{!}', '').strip()
+                display_name = f"桥梁 #{clean_num}" if clean_num.isdigit() else (f"桥梁 {clean_num}" if clean_num else f"桥梁 ({raw_id})")
+            elif cat == 'spawn_point':
+                clean_sp = raw_name.replace('{!}', '').replace('_spawn_point', '').replace('_sp', '').replace('_', ' ').strip()
+                display_name = f"刷新点: {clean_sp}" if clean_sp else f"刷新点 ({raw_id})"
+            elif cat == 'hidden_system':
+                display_name = f"[隐匿] {raw_name}"
+            else:
+                display_name = raw_name.replace('_', ' ')
+
+            # 解析图标 ID (flags 的低 8 位)
+            flags = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
+            icon_id = flags & 0xFF
+
+            def safe_float(s):
+                try:
+                    return float(s)
+                except ValueError:
+                    match = re.match(r'^-?\d+(?:\.\d+)?', str(s))
+                    return float(match.group(0)) if match else 0.0
+
             p = {
-                'index': i, 'id': parts[3], 'name': parts[4].replace('_', ' '),
-                'faction': parts[8], 'x': float(parts[14]), 'y': float(parts[15]), 'parts': parts
+                'index': i,
+                'id': raw_id,
+                'name': raw_name,
+                'display_name': display_name,
+                'category': cat,
+                'angle': angle,
+                'faction': parts[8],
+                'icon_id': icon_id,
+                'flags': flags,
+                'x': safe_float(parts[14]),
+                'y': safe_float(parts[15]),
+                'z': safe_float(parts[16]) if len(parts) > 16 else 0.0,
+                'parts': parts
             }
             self.parties.append(p)
-            item = QListWidgetItem(f"{p['name']} ({p['id']})")
-            item.setData(Qt.UserRole, p['id'])
-            self.list_widget.addItem(item)
-            
+
         self.parties_filepath = filepath
+        self.update_party_list()
         self.draw_parties()
-        self.status_bar.showMessage(f"成功加载 {len(self.parties)} 个据点。")
-        
-    def filter_list(self, text):
-        text = text.lower()
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            item.setHidden(text not in item.text().lower())
-            
+        hidden_count = sum(1 for p in self.parties if p.get('category') == 'hidden_system')
+        self.status_bar.showMessage(f"成功加载 {len(self.parties)} 个据点 (已默认隐匿 {hidden_count} 个引擎系统项)。")
+
+    def apply_party_filters(self):
+        self.update_party_list()
+        self.draw_parties()
+
+    def on_toggle_show_hidden(self, checked):
+        self.apply_party_filters()
+
+    def update_party_list(self):
+        self.list_widget.clear()
+        show_hidden = self.cb_show_hidden.isChecked() if hasattr(self, 'cb_show_hidden') else False
+        selected_cat = self.combo_category.currentData() if hasattr(self, 'combo_category') else 'all'
+        search_text = self.filter_input.text().lower().strip() if hasattr(self, 'filter_input') else ''
+
+        hidden_total = 0
+        visible_count = 0
+
+        for p in self.parties:
+            cat = p.get('category', 'special_scene')
+            if cat == 'hidden_system':
+                hidden_total += 1
+
+            # 隐匿项过滤
+            if cat == 'hidden_system' and not show_hidden:
+                continue
+            # 分类过滤
+            if selected_cat != 'all' and cat != selected_cat:
+                continue
+            # 搜索文本过滤
+            full_str = f"{p['display_name']} {p['id']} {p['name']}".lower()
+            if search_text and (search_text not in full_str):
+                continue
+
+            visible_count += 1
+            item = QListWidgetItem(f"{p['display_name']} ({p['id']})")
+            item.setData(Qt.UserRole, p['id'])
+
+            # 赋予 18x18 拿战风格迷你矢量图标
+            icon = create_category_icon(cat)
+            if icon:
+                item.setIcon(icon)
+
+            # 颜色分级显示
+            if cat == 'hidden_system':
+                item.setForeground(QColor('#6c7086'))
+            elif cat == 'town':
+                item.setForeground(QColor('#89b4fa'))
+            elif cat == 'castle':
+                item.setForeground(QColor('#f38ba8'))
+            elif cat == 'village':
+                item.setForeground(QColor('#fab387'))
+            elif cat == 'bridge':
+                item.setForeground(QColor('#94e2d5'))
+            elif cat == 'training_camp':
+                item.setForeground(QColor('#a6e3a1'))
+            elif cat == 'special_scene':
+                item.setForeground(QColor('#cba6f7'))
+            elif cat == 'spawn_point':
+                item.setForeground(QColor('#f9e2af'))
+
+            self.list_widget.addItem(item)
+
+        if hasattr(self, 'lbl_party_stats'):
+            self.lbl_party_stats.setText(f"显示: {visible_count} / {len(self.parties)} (隐匿 {hidden_total})")
+
+    def draw_parties(self):
+        for item in self.party_items.values():
+            self.scene.removeItem(item)
+        self.party_items.clear()
+
+        show_hidden = self.cb_show_hidden.isChecked() if hasattr(self, 'cb_show_hidden') else False
+        selected_cat = self.combo_category.currentData() if hasattr(self, 'combo_category') else 'all'
+        search_text = self.filter_input.text().lower().strip() if hasattr(self, 'filter_input') else ''
+
+        for party in self.parties:
+            cat = party.get('category', 'special_scene')
+            if cat == 'hidden_system' and not show_hidden:
+                continue
+            if selected_cat != 'all' and cat != selected_cat:
+                continue
+            if search_text:
+                full_str = f"{party['display_name']} {party['id']} {party['name']}".lower()
+                if search_text not in full_str:
+                    continue
+
+            item = PartyItem(party, self)
+            item.setPos(self.game_to_pixel_pt(party['x'], party['y']))
+            item.setFlag(QGraphicsItem.ItemIsMovable, self.active_tool == "party")
+            self.scene.addItem(item)
+            self.party_items[party['id']] = item
+
+    def rotate_selected_bridge(self, delta_deg):
+        # 旋转当前选中的桥梁朝向
+        target_item = None
+        for it in self.scene.selectedItems():
+            if isinstance(it, PartyItem) and it.party.get('category') == 'bridge':
+                target_item = it
+                break
+
+        if not target_item and hasattr(self, 'current_selected_party') and self.current_selected_party:
+            if self.current_selected_party.get('category') == 'bridge':
+                target_item = self.party_items.get(self.current_selected_party['id'])
+
+        if target_item:
+            p = target_item.party
+            delta_rad = math.radians(delta_deg)
+            p['angle'] = (p.get('angle', 0.0) + delta_rad) % (2 * math.pi)
+            target_item.update()
+            self.is_modified = True
+            deg = math.degrees(p['angle'])
+            self.lbl_bridge_heading.setText(f"🌉 桥梁朝向: {deg:.1f}° ({p['angle']:.3f} rad)")
+            self.update_status(f"已旋转桥梁 {p['display_name']} 朝向至 {deg:.1f}° ({p['angle']:.4f} rad)")
+
+    def on_faction_changed(self, index):
+        if not hasattr(self, 'current_selected_party') or not self.current_selected_party:
+            return
+        faction = self.combo_properties_faction.currentText()
+        if faction and self.current_selected_party['faction'] != faction:
+            self.current_selected_party['faction'] = faction
+            self.current_selected_party['parts'][8] = faction
+            self.is_modified = True
+            self.update_status(f"已修改据点 {self.current_selected_party['display_name']} 阵营为 {faction}")
+            # Refresh party visual
+            target_item = self.party_items.get(self.current_selected_party['id'])
+            if target_item:
+                target_item.update()
+                target_item.setToolTip(f"【{CATEGORY_META.get(self.current_selected_party.get('category', 'special_scene'), CATEGORY_META['special_scene'])['name']}】{self.current_selected_party['display_name']}\nID: {self.current_selected_party['id']}\n势力: {faction}\n坐标: ({self.current_selected_party['x']:.2f}, {self.current_selected_party['y']:.2f})")
+
+    def on_icon_changed(self, value):
+        if not hasattr(self, 'current_selected_party') or not self.current_selected_party:
+            return
+        if self.current_selected_party.get('icon_id') != value:
+            self.current_selected_party['icon_id'] = value
+            flags = self.current_selected_party.get('flags', 0)
+            new_flags = (flags & ~0xFF) | value
+            self.current_selected_party['flags'] = new_flags
+            self.current_selected_party['parts'][5] = str(new_flags)
+            self.is_modified = True
+            self.update_status(f"已修改据点 {self.current_selected_party['display_name']} 图标为 {value}")
+
+    def update_properties_panel(self):
+        if not hasattr(self, 'current_selected_party') or not self.current_selected_party:
+            self.party_properties_panel.hide()
+            return
+
+        self.party_properties_panel.show()
+        p = self.current_selected_party
+
+        # 更新阵营列表并选中当前
+        self.combo_properties_faction.blockSignals(True)
+        self.combo_properties_faction.clear()
+        factions = sorted(list({party['faction'] for party in self.parties if party.get('faction')}))
+        for f in factions:
+            self.combo_properties_faction.addItem(f)
+        current_fac = p.get('faction', '')
+        if current_fac in factions:
+            self.combo_properties_faction.setCurrentText(current_fac)
+        self.combo_properties_faction.blockSignals(False)
+
+        # 更新图标
+        self.spin_properties_icon.blockSignals(True)
+        self.spin_properties_icon.setValue(p.get('icon_id', 0))
+        self.spin_properties_icon.blockSignals(False)
+
+        # 桥梁专属控件
+        if p.get('category') == 'bridge':
+            self.bridge_control_widget.show()
+            deg = math.degrees(p.get('angle', 0.0))
+            self.lbl_bridge_heading.setText(f"🌉 桥梁朝向: {deg:.1f}° ({p.get('angle', 0.0):.3f} rad)")
+        else:
+            self.bridge_control_widget.hide()
+
+    def on_map_selection_changed(self):
+        items = self.scene.selectedItems()
+        target = None
+        for it in items:
+            if isinstance(it, PartyItem):
+                target = it
+                break
+
+        if target:
+            self.current_selected_party = target.party
+            self.update_properties_panel()
+
+            # 同步高亮左侧列表对应项
+            pid = target.party['id']
+            for i in range(self.list_widget.count()):
+                l_item = self.list_widget.item(i)
+                if l_item.data(Qt.UserRole) == pid:
+                    self.list_widget.blockSignals(True)
+                    self.list_widget.setCurrentItem(l_item)
+                    self.list_widget.blockSignals(False)
+                    break
+        else:
+            self.current_selected_party = None
+            self.update_properties_panel()
+
+    def on_list_click(self, list_item):
+        pid = list_item.data(Qt.UserRole)
+        item = self.party_items.get(pid)
+        if item:
+            self.view.centerOn(item)
+            self.scene.clearSelection()
+            item.setSelected(True)
+            self.current_selected_party = item.party
+            self.update_properties_panel()
+
     def game_to_pixel_pt(self, x, y):
         px = (x - self.min_x) * self.scale_factor
         py = self.img_height - (y - self.min_y) * self.scale_factor
@@ -888,26 +2183,7 @@ class MapEditor(QMainWindow):
         x = (px / self.scale_factor) + self.min_x
         y = self.min_y + (self.img_height - py) / self.scale_factor
         return x, y
-        
-    def draw_parties(self):
-        for item in self.party_items.values():
-            self.scene.removeItem(item)
-        self.party_items.clear()
-        for party in self.parties:
-            item = PartyItem(party, self)
-            item.setPos(self.game_to_pixel_pt(party['x'], party['y']))
-            item.setFlag(QGraphicsItem.ItemIsMovable, self.active_tool == "party")
-            self.scene.addItem(item)
-            self.party_items[party['id']] = item
-            
-    def on_list_click(self, list_item):
-        pid = list_item.data(Qt.UserRole)
-        item = self.party_items.get(pid)
-        if item:
-            self.view.centerOn(item)
-            self.scene.clearSelection()
-            item.setSelected(True)
-            
+
     def update_status(self, msg):
         self.status_bar.showMessage(msg)
         
@@ -934,6 +2210,10 @@ class MapEditor(QMainWindow):
                     x_str, y_str = f"{p['x']:.6f}", f"{p['y']:.6f}"
                     parts[14:20] = [x_str, y_str, x_str, y_str, x_str, y_str]
                     self.original_parties_lines[p['index']] = " " + " ".join(parts) + " \n"
+                    # 写回第二行角度数据，保留桥梁及实体的精确朝向
+                    if 'angle' in p and p['index'] + 1 < len(self.original_parties_lines):
+                        self.original_parties_lines[p['index'] + 1] = f"{p['angle']:.6f}\n"
+
                 with open(self.parties_filepath, 'w', encoding='utf-8') as f:
                     f.writelines(self.original_parties_lines)
                     
